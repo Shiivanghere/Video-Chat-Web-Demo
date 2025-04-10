@@ -1,4 +1,4 @@
-const socket = io();
+const socket = io("https://talkatoo.onrender.com");
 const localVideo = document.getElementById('localVideo');
 const remoteVideo = document.getElementById('remoteVideo');
 const disconnectBtn = document.getElementById('disconnectBtn');
