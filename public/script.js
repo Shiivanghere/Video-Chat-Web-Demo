@@ -4,6 +4,9 @@ const remoteVideo = document.getElementById('remoteVideo');
 const disconnectBtn = document.getElementById('disconnectBtn');
 
 let peerConnection;
+let isRemoteDescriptionSet = false;
+let pendingCandidates = [];
+
 const config = {
   iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
 };
@@ -31,19 +34,46 @@ navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then(stream =>
 
     if (data.type === 'offer') {
       await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
+      isRemoteDescriptionSet = true;
+
+      for (const candidate of pendingCandidates) {
+        try {
+          await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (err) {
+          console.error('Error applying queued candidate:', err);
+        }
+      }
+      pendingCandidates = [];
+
       const answer = await peerConnection.createAnswer();
       await peerConnection.setLocalDescription(answer);
       socket.emit('signal', {
         type: 'answer',
         sdp: answer.sdp,
       });
+
     } else if (data.type === 'answer') {
       await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
+      isRemoteDescriptionSet = true;
+
+      for (const candidate of pendingCandidates) {
+        try {
+          await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (err) {
+          console.error('Error applying queued candidate:', err);
+        }
+      }
+      pendingCandidates = [];
+
     } else if (data.candidate) {
-      try {
-        await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
-      } catch (err) {
-        console.error('ICE candidate error:', err);
+      if (isRemoteDescriptionSet) {
+        try {
+          await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+        } catch (err) {
+          console.error('ICE candidate error:', err);
+        }
+      } else {
+        pendingCandidates.push(data.candidate);
       }
     }
   });
