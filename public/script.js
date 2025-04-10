@@ -4,122 +4,100 @@ const remoteVideo = document.getElementById('remoteVideo');
 const disconnectBtn = document.getElementById('disconnectBtn');
 
 let peerConnection;
-let isRemoteDescriptionSet = false;
-let pendingCandidates = [];
+let isInitiator = false;
+let localStream;
 
 const config = {
-  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
 };
 
-navigator.mediaDevices.getUserMedia({ video: true, audio: true }).then(stream => {
-  localVideo.srcObject = stream;
+navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+  .then(stream => {
+    localStream = stream;
+    localVideo.srcObject = stream;
 
-  socket.on('peer-found', async () => {
-    peerConnection = createPeerConnection();
-    stream.getTracks().forEach(track => peerConnection.addTrack(track, stream));
-
-    const offer = await peerConnection.createOffer();
-    await peerConnection.setLocalDescription(offer);
-    socket.emit('signal', {
-      type: 'offer',
-      sdp: offer.sdp,
+    socket.on('peer-found', () => {
+      isInitiator = true;
+      createPeerConnection();
+      addLocalTracks();
+      createAndSendOffer();
     });
-  });
 
-  socket.on('signal', async (data) => {
-    if (!peerConnection) {
-      peerConnection = createPeerConnection();
-      stream.getTracks().forEach(track => peerConnection.addTrack(track, stream));
-    }
-
-    if (data.type === 'offer') {
-      await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
-      isRemoteDescriptionSet = true;
-
-      for (const candidate of pendingCandidates) {
-        try {
-          await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (err) {
-          console.error('Error applying queued candidate:', err);
-        }
+    socket.on('signal', async (data) => {
+      if (!peerConnection) {
+        createPeerConnection();
+        addLocalTracks();
       }
-      pendingCandidates = [];
 
-      const answer = await peerConnection.createAnswer();
-      await peerConnection.setLocalDescription(answer);
-      socket.emit('signal', {
-        type: 'answer',
-        sdp: answer.sdp,
-      });
-
-    } else if (data.type === 'answer') {
-      await peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
-      isRemoteDescriptionSet = true;
-
-      for (const candidate of pendingCandidates) {
-        try {
-          await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (err) {
-          console.error('Error applying queued candidate:', err);
-        }
-      }
-      pendingCandidates = [];
-
-    } else if (data.candidate) {
-      if (isRemoteDescriptionSet) {
+      if (data.type === 'offer') {
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(data));
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+        socket.emit('signal', peerConnection.localDescription);
+      } else if (data.type === 'answer') {
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(data));
+      } else if (data.candidate) {
         try {
           await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
         } catch (err) {
-          console.error('ICE candidate error:', err);
+          console.error('Error adding ICE candidate:', err);
         }
-      } else {
-        pendingCandidates.push(data.candidate);
       }
+    });
+
+    socket.on('peer-disconnected', () => {
+      cleanupAndReload("Peer disconnected.");
+    });
+
+    disconnectBtn.onclick = () => {
+      cleanupAndReload("You disconnected.");
+    };
+  })
+  .catch(err => {
+    alert("Camera/Mic access is required.");
+    console.error(err);
+  });
+
+function createPeerConnection() {
+  peerConnection = new RTCPeerConnection(config);
+
+  peerConnection.onicecandidate = event => {
+    if (event.candidate) {
+      socket.emit('signal', { candidate: event.candidate });
     }
-  });
-
-  socket.on('peer-disconnected', () => {
-    cleanupAndReload("Peer disconnected.");
-  });
-
-  disconnectBtn.onclick = () => {
-    cleanupAndReload("You disconnected.");
   };
 
-  function createPeerConnection() {
-    const pc = new RTCPeerConnection(config);
+  peerConnection.ontrack = event => {
+    remoteVideo.srcObject = event.streams[0];
+  };
+}
 
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        socket.emit('signal', {
-          candidate: {
-            candidate: event.candidate.candidate,
-            sdpMid: event.candidate.sdpMid,
-            sdpMLineIndex: event.candidate.sdpMLineIndex
-          }
-        });
-      }
-    };
+function addLocalTracks() {
+  if (!localStream || !peerConnection) return;
+  localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+}
 
-    pc.ontrack = (event) => {
-      remoteVideo.srcObject = event.streams[0];
-    };
+function createAndSendOffer() {
+  peerConnection.createOffer()
+    .then(offer => peerConnection.setLocalDescription(offer))
+    .then(() => socket.emit('signal', peerConnection.localDescription))
+    .catch(err => console.error('Offer creation error:', err));
+}
 
-    return pc;
+function cleanupAndReload(msg) {
+  if (peerConnection) {
+    peerConnection.close();
+    peerConnection = null;
+  }
+  if (localStream) {
+    localStream.getTracks().forEach(track => track.stop());
   }
 
-  function cleanupAndReload(msg) {
-    if (peerConnection) {
-      peerConnection.close();
-      peerConnection = null;
-    }
+  localVideo.srcObject = null;
+  remoteVideo.srcObject = null;
 
-    stream.getTracks().forEach(track => track.stop());
-    localVideo.srcObject = null;
-    remoteVideo.srcObject = null;
-    socket.disconnect();
+  socket.disconnect();
 
-    alert(msg);
-    location.reload();
-  }
-});
+  alert(msg);
+  location.reload();
+}
